@@ -1,13 +1,16 @@
-const fs = require("fs");
-const path = require("path");
+const { promisify } = require("util");
 const cliProgress = require("cli-progress");
 const colors = require("ansi-colors");
+const fs = require("fs");
+const heicConvert = require("heic-convert");
+const path = require("path");
+const sharp = require("sharp");
 
 const inputFolder = "/Users/antonpedersen/Dropbox/Bilder/Bröllop/";
 const outputFolder = "./output/";
 
 // Create a new progress bar instance and use shades_classic theme
-const copyProgressBar = new cliProgress.SingleBar(
+const progressBar = new cliProgress.SingleBar(
   {
     format: `Progress [${colors.cyan(
       "{bar}"
@@ -44,7 +47,12 @@ const formatDirectoryName = (string) => {
     .split("/")
     .filter((s) => s)
     .map((s) =>
-      s.toLowerCase().replace(/\ /g, "-").replace(/åä/g, "a").replace(/ö/g, "o")
+      s
+        .toLowerCase()
+        .replace(/\ /g, "-")
+        // Replace åäö doesn't seem to work in node?
+        .replace(/[åä]/g, "a")
+        .replace(/ö/g, "o")
     )
     .join("-");
 };
@@ -67,7 +75,12 @@ const createFileObject = (filePath, dirPath) => {
       const { birthtime } = stats;
       const dateTimeName = formatDateTime(birthtime);
       const fileGroupName = formatDirectoryName(dirPath);
-      const extension = path.extname(filePath);
+      let extension = path.extname(filePath).toLocaleLowerCase();
+
+      // Change .jpeg files to .jpg for consistency
+      if (extension === ".jpeg") {
+        extension = ".jpg";
+      }
 
       // Build the final name of the file after it's copied
       const outputFileName = `${dateTimeName}${
@@ -85,6 +98,8 @@ const createFileObject = (filePath, dirPath) => {
 /**
  * Loop inputFolder for sub directories and find nested files
  */
+const fileTypes = new Set();
+
 const loopDirectoryRecursive = async (dirPath) => {
   let files = [];
 
@@ -95,8 +110,12 @@ const loopDirectoryRecursive = async (dirPath) => {
     // Get data from the file
     const fileName = fileNameRaw.trim();
     const extension = path.extname(fileName);
-    const skipFile = [".DS_Store", "Icon"].includes(fileName);
+    const skipFile =
+      [".DS_Store", "Icon"].includes(fileName) ||
+      [".dng", ".DNG", ".db"].includes(extension);
     const isDirectory = !extension && !skipFile;
+
+    fileTypes.add(extension);
 
     const filePath = `${dirPath}${fileName}`;
 
@@ -119,22 +138,56 @@ const loopDirectoryRecursive = async (dirPath) => {
  * Take a list of files and copy them to output folder
  */
 const copyFiles = async (files) => {
-  // Start terminal progress bar
-  copyProgressBar.start(files.length, 0);
-
   // Loop trough all files and copy them to target path
   for (const file of files) {
-    await fs.promises.copyFile(file.sourcePath, file.targetPath, (e) => {
-      if (e) {
-        console.error(`Error: ${file.sourcePath}`);
-      }
-    });
+    // .heic images should be converted to .jpg
+    if (file.targetPath.includes(".heic")) {
+      const inputBuffer = await promisify(fs.readFile)(file.sourcePath);
+      const outputBuffer = await heicConvert({
+        buffer: inputBuffer, // the HEIC file buffer
+        format: "JPEG", // output format
+        quality: 1, // the jpeg compression quality, between 0 and 1
+      });
+      file.targetPath = file.targetPath.replace(".heic", ".jpg");
+      await promisify(fs.writeFile)(file.targetPath, outputBuffer);
 
-    copyProgressBar.increment();
+      // All other files are just copied
+    } else {
+      await fs.promises.copyFile(file.sourcePath, file.targetPath, (e) => {
+        if (e) {
+          console.error(`Error: ${file.sourcePath}`);
+        }
+      });
+    }
+
+    progressBar.increment();
   }
+};
 
-  // Copying complete
-  copyProgressBar.stop();
+/**
+ * Resize images to a okey size
+ */
+
+const resizeFiles = async (files) => {
+  for (const file of files) {
+    if (file.targetPath.endsWith(".jpg")) {
+      await new Promise((resolve, reject) => {
+        sharp(file.targetPath)
+          .resize({ width: 1040 })
+          .toBuffer((err, buffer) => {
+            fs.writeFile(file.targetPath, buffer, (e) => {
+              if (e) {
+                reject();
+              } else {
+                resolve();
+              }
+            });
+          });
+      });
+    }
+
+    progressBar.increment();
+  }
 };
 
 /**
@@ -148,6 +201,8 @@ const start = async () => {
   const files = await loopDirectoryRecursive(inputFolder);
   console.info(`Found ${files.length} files to copy`);
 
+  //console.info("Found file types", fileTypes);
+
   // Create an output folder if it doesn't exists already
   if (!fs.existsSync(outputFolder)) {
     fs.mkdirSync(outputFolder);
@@ -156,6 +211,7 @@ const start = async () => {
 
   // Test output files for duplicates
   const unique = {};
+
   files.forEach((file) => {
     if (unique[file.targetPath]) {
       const lastIndexOf = file.targetPath.lastIndexOf(".");
@@ -182,9 +238,18 @@ const start = async () => {
     }
   });
 
+  // Start terminal progress bar
+  console.log("Begin file proccessing...");
+  progressBar.start(files.length * 2, 0);
+
   // Copy the files to the output folder
-  console.info("Begin to copy files ");
-  copyFiles(files);
-  console.log("Finished");
+  await copyFiles(files);
+
+  // Resize images
+  await resizeFiles(files);
+
+  // Copying complete
+  progressBar.stop();
+  console.log("File proccessing complete");
 };
 start();
