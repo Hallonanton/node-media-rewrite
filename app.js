@@ -6,7 +6,7 @@ const heicConvert = require("heic-convert");
 const path = require("path");
 const sharp = require("sharp");
 
-const inputFolder = "/Users/antonpedersen/Dropbox/Bilder/Bröllop/";
+const inputFolder = "/Users/antonpedersen/Dropbox/Bilder/Bröllop/Gallrade/";
 const outputFolder = "./output/";
 
 // Create a new progress bar instance and use shades_classic theme
@@ -25,19 +25,6 @@ const progressBar = new cliProgress.SingleBar(
 const addPrecedingDateZero = (string, slice = 2) => {
   const zeros = "0".repeat(slice - 1);
   return `${zeros}${string}`.slice(-1 * slice);
-};
-
-// Format date to string
-const formatDateTime = (birthtime) => {
-  const year = birthtime.getFullYear();
-  const month = addPrecedingDateZero(birthtime.getMonth() + 1);
-  const date = addPrecedingDateZero(birthtime.getDate());
-  const hours = addPrecedingDateZero(birthtime.getHours());
-  const minutes = addPrecedingDateZero(birthtime.getMinutes());
-  const seconds = addPrecedingDateZero(birthtime.getSeconds());
-  const milliseconds = addPrecedingDateZero(birthtime.getMilliseconds(), 3);
-
-  return `${year}-${month}-${date}-${hours}-${minutes}-${seconds}-${milliseconds}`;
 };
 
 // Format directory name of the file
@@ -72,8 +59,6 @@ const createFileObject = (filePath, dirPath) => {
         reject("Error...");
       }
 
-      const { birthtime } = stats;
-      const dateTimeName = formatDateTime(birthtime);
       const fileGroupName = formatDirectoryName(dirPath);
       let extension = path.extname(filePath).toLocaleLowerCase();
 
@@ -83,9 +68,7 @@ const createFileObject = (filePath, dirPath) => {
       }
 
       // Build the final name of the file after it's copied
-      const outputFileName = `${dateTimeName}${
-        fileGroupName ? `-${fileGroupName}` : ""
-      }${extension}`;
+      const outputFileName = `${fileGroupName}${extension}`;
 
       resolve({
         sourcePath: filePath,
@@ -138,29 +121,33 @@ const loopDirectoryRecursive = async (dirPath) => {
  * Take a list of files and copy them to output folder
  */
 const copyFiles = async (files) => {
-  // Loop trough all files and copy them to target path
-  for (const file of files) {
-    // .heic images should be converted to .jpg
-    if (file.targetPath.includes(".heic")) {
-      const inputBuffer = await promisify(fs.readFile)(file.sourcePath);
-      const outputBuffer = await heicConvert({
-        buffer: inputBuffer, // the HEIC file buffer
-        format: "JPEG", // output format
-        quality: 1, // the jpeg compression quality, between 0 and 1
-      });
-      file.targetPath = file.targetPath.replace(".heic", ".jpg");
-      await promisify(fs.writeFile)(file.targetPath, outputBuffer);
+  try {
+    // Loop trough all files and copy them to target path
+    for (const file of files) {
+      // .heic images should be converted to .jpg
+      if (file.targetPath.includes(".heic")) {
+        const inputBuffer = await promisify(fs.readFile)(file.sourcePath);
+        const outputBuffer = await heicConvert({
+          buffer: inputBuffer, // the HEIC file buffer
+          format: "JPEG", // output format
+          quality: 1, // the jpeg compression quality, between 0 and 1
+        });
+        file.targetPath = file.targetPath.replace(".heic", ".jpg");
+        await promisify(fs.writeFile)(file.targetPath, outputBuffer);
 
-      // All other files are just copied
-    } else {
-      await fs.promises.copyFile(file.sourcePath, file.targetPath, (e) => {
-        if (e) {
-          console.error(`Error: ${file.sourcePath}`);
-        }
-      });
+        // All other files are just copied
+      } else {
+        await fs.promises.copyFile(file.sourcePath, file.targetPath, (e) => {
+          if (e) {
+            console.error(`Error: ${file.sourcePath}`);
+          }
+        });
+      }
+
+      progressBar.increment();
     }
-
-    progressBar.increment();
+  } catch (e) {
+    console.warn(e);
   }
 };
 
@@ -213,29 +200,18 @@ const start = async () => {
   const unique = {};
 
   files.forEach((file) => {
-    if (unique[file.targetPath]) {
-      const lastIndexOf = file.targetPath.lastIndexOf(".");
-      let i = 2;
-      let uniqueFilename = insertString(
-        file.targetPath,
-        lastIndexOf,
-        `-${addPrecedingDateZero(i)}`
-      );
+    const [_, filname, extension] = file.targetPath.split(".");
 
-      while (unique[uniqueFilename]) {
-        i++;
-        uniqueFilename = insertString(
-          file.targetPath,
-          lastIndexOf,
-          `-${addPrecedingDateZero(i)}`
-        );
-      }
+    let i = 1;
+    let uniqueFilename = `${filname}-${addPrecedingDateZero(i, 3)}`;
 
-      unique[uniqueFilename] = true;
-      file.targetPath = uniqueFilename;
-    } else {
-      unique[file.targetPath] = true;
+    while (unique[uniqueFilename]) {
+      i++;
+      uniqueFilename = `${filname}-${addPrecedingDateZero(i, 3)}`;
     }
+
+    unique[uniqueFilename] = true;
+    file.targetPath = `./${uniqueFilename}.${extension}`;
   });
 
   // Start terminal progress bar
